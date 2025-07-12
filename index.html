@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Multiplayer Pong</title>
+    <style>
+        /* Mobile-first CSS */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #gameCanvas {
+            border: 2px solid #fff;
+            background: #000;
+            max-width: 100%;
+            max-height: 100%;
+            touch-action: none;
+        }
+
+        #gameInfo {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            z-index: 10;
+            font-size: 14px;
+        }
+
+        #score {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        #status {
+            font-size: 12px;
+            color: #aaa;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            font-size: 10px;
+            color: #666;
+        }
+
+        .connection-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .connected { background: #0f0; }
+        .disconnected { background: #f00; }
+        .connecting { background: #ff0; }
+
+        @media (min-width: 768px) {
+            #gameInfo { font-size: 16px; }
+            #score { font-size: 32px; }
+            #status { font-size: 14px; }
+            #controls { font-size: 12px; }
+        }
+
+        @media (orientation: landscape) {
+            #gameCanvas {
+                width: 100vw;
+                height: 100vh;
+            }
+        }
+
+        @media (orientation: portrait) {
+            #gameCanvas {
+                width: 100vw;
+                height: 60vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="gameInfo">
+            <div id="score">0 - 0</div>
+            <div id="status">
+                <span class="connection-status disconnected"></span>
+                Connecting...
+            </div>
+        </div>
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div id="controls">
+            Touch and drag to move paddle • Desktop: Use mouse or arrow keys
+        </div>
+    </div>
+
+    <script>
+        class PongGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.scoreElement = document.getElementById('score');
+                this.statusElement = document.getElementById('status');
+                
+                // Game state
+                this.gameState = {
+                    ball: { x: 400, y: 200, dx: 5, dy: 3, radius: 10 },
+                    paddles: {
+                        left: { x: 20, y: 150, width: 10, height: 100 },
+                        right: { x: 770, y: 150, width: 10, height: 100 }
+                    },
+                    score: { left: 0, right: 0 },
+                    gameRunning: false
+                };
+                
+                this.playerId = null;
+                this.playerSide = null;
+                this.ws = null;
+                this.lastTouchY = 0;
+                this.isHost = false;
+                
+                this.initWebSocket();
+                this.initControls();
+                this.resizeCanvas();
+                this.gameLoop();
+                
+                window.addEventListener('resize', () => this.resizeCanvas());
+                window.addEventListener('orientationchange', () => {
+                    setTimeout(() => this.resizeCanvas(), 100);
+                });
+            }
+            
+            initWebSocket() {
+                // For demo purposes, we'll simulate WebSocket connection
+                // In production, replace with actual WebSocket server
+                this.simulateWebSocketConnection();
+            }
+            
+            simulateWebSocketConnection() {
+                // Simulate connection process
+                this.updateStatus('connecting', 'Connecting...');
+                
+                setTimeout(() => {
+                    this.updateStatus('connected', 'Connected - Waiting for opponent');
+                    this.playerId = Math.random().toString(36).substr(2, 9);
+                    this.playerSide = 'left'; // First player is left
+                    this.isHost = true;
+                    
+                    // Simulate opponent joining after 2 seconds
+                    setTimeout(() => {
+                        this.updateStatus('connected', 'Game Ready - Touch to move!');
+                        this.gameState.gameRunning = true;
+                        this.startGameLoop();
+                    }, 2000);
+                }, 1000);
+            }
+            
+            // Real WebSocket implementation (commented for demo)
+            /*
+            initWebSocket() {
+                this.ws = new WebSocket('wss://your-server.example.com');
+                
+                this.ws.onopen = () => {
+                    this.updateStatus('connected', 'Connected - Waiting for opponent');
+                    this.ws.send(JSON.stringify({ type: 'join' }));
+                };
+                
+                this.ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.handleServerMessage(data);
+                };
+                
+                this.ws.onclose = () => {
+                    this.updateStatus('disconnected', 'Disconnected');
+                };
+                
+                this.ws.onerror = () => {
+                    this.updateStatus('disconnected', 'Connection error');
+                };
+            }
+            */
+            
+            handleServerMessage(data) {
+                switch(data.type) {
+                    case 'playerAssigned':
+                        this.playerId = data.playerId;
+                        this.playerSide = data.side;
+                        this.isHost = data.isHost;
+                        break;
+                    case 'gameStart':
+                        this.updateStatus('connected', 'Game Started!');
+                        this.gameState.gameRunning = true;
+                        break;
+                    case 'gameState':
+                        this.gameState = data.gameState;
+                        break;
+                    case 'paddleMove':
+                        if (data.side !== this.playerSide) {
+                            this.gameState.paddles[data.side].y = data.y;
+                        }
+                        break;
+                }
+            }
+            
+            initControls() {
+                // Touch controls
+                this.canvas.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    this.lastTouchY = this.getTouchY(touch);
+                });
+                
+                this.canvas.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    const touch = e.touches[0];
+                    const touchY = this.getTouchY(touch);
+                    this.movePaddle(touchY);
+                });
+                
+                // Mouse controls
+                this.canvas.addEventListener('mousemove', (e) => {
+                    const rect = this.canvas.getBoundingClientRect();
+                    const y = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+                    this.movePaddle(y);
+                });
+                
+                // Keyboard controls
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowUp') {
+                        this.movePaddle(this.gameState.paddles[this.playerSide].y - 20);
+                    } else if (e.key === 'ArrowDown') {
+                        this.movePaddle(this.gameState.paddles[this.playerSide].y + 20);
+                    }
+                });
+            }
+            
+            getTouchY(touch) {
+                const rect = this.canvas.getBoundingClientRect();
+                return (touch.clientY - rect.top) * (this.canvas.height / rect.height);
+            }
+            
+            movePaddle(y) {
+                if (!this.playerSide) return;
+                
+                const paddle = this.gameState.paddles[this.playerSide];
+                const newY = Math.max(0, Math.min(y - paddle.height / 2, this.canvas.height - paddle.height));
+                
+                if (Math.abs(newY - paddle.y) > 1) {
+                    paddle.y = newY;
+                    this.sendPaddleMove(newY);
+                }
+            }
+            
+            sendPaddleMove(y) {
+                // In real implementation, send via WebSocket
+                /*
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'paddleMove',
+                        side: this.playerSide,
+                        y: y
+                    }));
+                }
+                */
+            }
+            
+            startGameLoop() {
+                if (this.isHost) {
+                    this.gameLoopInterval = setInterval(() => {
+                        this.updateBall();
+                        this.checkCollisions();
+                        this.sendGameState();
+                    }, 16); // 60 FPS
+                }
+            }
+            
+            updateBall() {
+                if (!this.gameState.gameRunning) return;
+                
+                const ball = this.gameState.ball;
+                ball.x += ball.dx;
+                ball.y += ball.dy;
+                
+                // Top/bottom collision
+                if (ball.y <= ball.radius || ball.y >= this.canvas.height - ball.radius) {
+                    ball.dy = -ball.dy;
+                }
+                
+                // Score detection
+                if (ball.x < 0) {
+                    this.gameState.score.right++;
+                    this.resetBall();
+                } else if (ball.x > this.canvas.width) {
+                    this.gameState.score.left++;
+                    this.resetBall();
+                }
+            }
+            
+            checkCollisions() {
+                const ball = this.gameState.ball;
+                const leftPaddle = this.gameState.paddles.left;
+                const rightPaddle = this.gameState.paddles.right;
+                
+                // Left paddle collision
+                if (ball.x - ball.radius <= leftPaddle.x + leftPaddle.width &&
+                    ball.y >= leftPaddle.y &&
+                    ball.y <= leftPaddle.y + leftPaddle.height &&
+                    ball.dx < 0) {
+                    ball.dx = -ball.dx;
+                    ball.x = leftPaddle.x + leftPaddle.width + ball.radius;
+                }
+                
+                // Right paddle collision
+                if (ball.x + ball.radius >= rightPaddle.x &&
+                    ball.y >= rightPaddle.y &&
+                    ball.y <= rightPaddle.y + rightPaddle.height &&
+                    ball.dx > 0) {
+                    ball.dx = -ball.dx;
+                    ball.x = rightPaddle.x - ball.radius;
+                }
+            }
+            
+            resetBall() {
+                const ball = this.gameState.ball;
+                ball.x = this.canvas.width / 2;
+                ball.y = this.canvas.height / 2;
+                ball.dx = (Math.random() > 0.5 ? 1 : -1) * 5;
+                ball.dy = (Math.random() - 0.5) * 6;
+            }
+            
+            sendGameState() {
+                // In real implementation, send via WebSocket
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'gameState',
+                        gameState: this.gameState
+                    }));
+                }
+            }
+            
+            gameLoop() {
+                this.render();
+                requestAnimationFrame(() => this.gameLoop());
+            }
+            
+            render() {
+                // Clear canvas
+                this.ctx.fillStyle = '#000';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Draw center line
+                this.ctx.strokeStyle = '#fff';
+                this.ctx.setLineDash([10, 10]);
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.canvas.width / 2, 0);
+                this.ctx.lineTo(this.canvas.width / 2, this.canvas.height);
+                this.ctx.stroke();
+                this.ctx.setLineDash([]);
+                
+                // Draw paddles
+                this.ctx.fillStyle = '#fff';
+                const leftPaddle = this.gameState.paddles.left;
+                const rightPaddle = this.gameState.paddles.right;
+                
+                this.ctx.fillRect(leftPaddle.x, leftPaddle.y, leftPaddle.width, leftPaddle.height);
+                this.ctx.fillRect(rightPaddle.x, rightPaddle.y, rightPaddle.width, rightPaddle.height);
+                
+                // Highlight player's paddle
+                if (this.playerSide) {
+                    this.ctx.fillStyle = '#0f0';
+                    const playerPaddle = this.gameState.paddles[this.playerSide];
+                    this.ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.width, playerPaddle.height);
+                }
+                
+                // Draw ball
+                this.ctx.fillStyle = '#fff';
+                this.ctx.beginPath();
+                this.ctx.arc(this.gameState.ball.x, this.gameState.ball.y, this.gameState.ball.radius, 0, Math.PI * 2);
+                this.ctx.fill();
+                
+                // Update score display
+                this.scoreElement.textContent = `${this.gameState.score.left} - ${this.gameState.score.right}`;
+            }
+            
+            resizeCanvas() {
+                const container = document.getElementById('gameContainer');
+                const containerRect = container.getBoundingClientRect();
+                
+                // Maintain aspect ratio
+                const aspectRatio = 800 / 400;
+                let width = containerRect.width * 0.95;
+                let height = width / aspectRatio;
+                
+                if (height > containerRect.height * 0.8) {
+                    height = containerRect.height * 0.8;
+                    width = height * aspectRatio;
+                }
+                
+                this.canvas.style.width = width + 'px';
+                this.canvas.style.height = height + 'px';
+            }
+            
+            updateStatus(status, message) {
+                const statusIndicator = document.querySelector('.connection-status');
+                statusIndicator.className = `connection-status ${status}`;
+                this.statusElement.innerHTML = `<span class="connection-status ${status}"></span>${message}`;
+            }
+        }
+        
+        // Start the game when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new PongGame();
+        });
+    </script>
+</body>
+</html>
